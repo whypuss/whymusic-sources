@@ -25,8 +25,8 @@ https://raw.githubusercontent.com/whypuss/whymusic-sources/main/whymusicall.js
 
 | 檔案 | 說明 |
 |------|------|
-| `whymusic.js` | 子音源 netease / joox，經 GD Music API。含跨子源救援與繁簡歸一化 |
-| `whymusicall.js` | 自 [joy-tune](https://github.com/sealure/joy-tune) 提取的音源組合，子源較多 |
+| `whymusic.js` | 子音源 netease / joox，。含跨子源救援與繁簡歸一化 |
+| `whymusicall.js` | 子源較多 |
 
 兩支可以並存安裝，互不覆蓋（platform 名稱不同）。
 
