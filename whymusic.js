@@ -369,6 +369,19 @@ async function resolveUrl(opts) {
 }
 
 // ── 推薦 ────────────────────────────────────────────────────────────
+/**
+ * 網易雲圖床支援 ?param=寬y高 取縮圖。榜單封面原圖一張 2~3MB，一頁列表
+ * 幾十張就是幾十 MB —— 光封面就能拖垮冷啟動與流量。列表縮圖 300 已夠
+ * Retina 螢幕用；播放中的大圖另有 getMusicArtwork 走 pic 端點拿高清。
+ */
+function thumb(picUrl) {
+    const url = String(picUrl || "");
+    if (!url) return "";
+    if (!/\bmusic\.126\.net\//.test(url)) return url;
+    // 順手升 https：圖床雙協定都通，http 在網頁版是 mixed content
+    return url.replace(/^http:/, "https:")
+        + (url.includes("?") ? "&" : "?") + "param=300y300";
+}
 /** 網易雲榜單曲目 → MusicItem（缺 id 或歌名的丟掉） */
 function trackToItem(track) {
     const title = String(track.name || "");
@@ -379,7 +392,7 @@ function trackToItem(track) {
         title,
         artist: (track.ar || track.artists || []).map(a => a.name).filter(Boolean).join(" / "),
         album: String(album.name || ""),
-        artwork: album.picUrl || "",
+        artwork: thumb(album.picUrl),
         platform: PLATFORM,
         subSource: "netease",
         picId: album.pic_str || (album.pic != null ? String(album.pic) : ""),
@@ -465,7 +478,7 @@ async function recommend(category, limit) {
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.8.0",
+    version: "1.8.1",
     author: "musicweb",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
