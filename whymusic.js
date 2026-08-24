@@ -385,30 +385,21 @@ async function neteaseRequest(path) {
     const cached = cacheGet(cacheKey);
     if (cached !== undefined) return cached;
 
-    const target = "https://music.163.com" + path;
-    const url = hostHasBackend()
-        ? "/api/proxy?url=" + encodeURIComponent(target) + "&method=GET"
-        : target;
-
     /**
-     * 網易雲會對同一來源 IP 的連續請求回 `code: -462`（要求手機驗證）並附上
-     * 空資料 —— 不是錯誤回應，HTTP 還是 200，內容卻是空的。經 Cloudflare
-     * Worker 代抓時特別容易撞到：出口 IP 是共用的。
+     * 網易雲會**隨機**拒絕請求：同一個網址連打，回應在 code 200 與 code -462
+     * （要求手機驗證、資料為空、HTTP 仍是 200）之間跳。原因是出口 IP ——
+     * 它標記了部分 IP，而共用出口（Cloudflare）每次請求走哪個是隨機的。
+     * 實測經 CF 的成功率約四成，家用網路直連百分之百。
      *
-     * 實測連打三次就會在第三次被擋。所以：擋了就退避重試（0.4s、1.2s），
-     * 成功的結果進快取（專輯內容不會變，快取住就不會反覆去踩）。
+     * 所以有後端時一律走後端的 /api/why-album*：那裡會重試到成功（六次把
+     * 成功率拉到 96%）並把結果放進全站共用快取，前端只發一個請求。
+     * 沒有後端（App 版）才自己直連 —— 那時用的是裝置自己的 IP，本來就不會被擋。
      */
-    let last;
-    for (let attempt = 0; attempt < 3; attempt++) {
-        if (attempt > 0) {
-            await new Promise(r => setTimeout(r, attempt === 1 ? 400 : 1200));
-        }
-        const data = await fetchJson(url);
-        if (data && data.code === -462) { last = data; continue; }
-        cacheSet(cacheKey, data, TTL.playlist);
-        return data;
-    }
-    throw new Error("網易雲要求驗證（連續請求過快），請稍後再試");
+    const data = hostHasBackend()
+        ? await fetchJson(path)
+        : await fetchJson("https://music.163.com" + path);
+    cacheSet(cacheKey, data, TTL.playlist);
+    return data;
 }
 
 /** 網易雲專輯 → MusicItem（type=album，播放器據此開專輯頁而不是直接播） */
@@ -430,8 +421,18 @@ function albumToItem(raw) {
     };
 }
 
-/** 專輯搜尋（網易雲 type=10）。只有 netease 有，不做多源聚合 */
+/**
+ * 專輯搜尋。有後端時打本站端點（後端已經歸一化好，直接用）；
+ * 沒有後端則直連網易雲並自己歸一化。
+ */
 async function searchAlbums(keyword, page, count) {
+    if (hostHasBackend()) {
+        const data = await neteaseRequest(
+            "/api/why-album-search?kw=" + encodeURIComponent(keyword) +
+            "&page=" + page + "&limit=" + count,
+        );
+        return (data && data.data) || [];
+    }
     const offset = (Math.max(1, page) - 1) * count;
     const data = await neteaseRequest(
         "/api/search/get?s=" + encodeURIComponent(keyword) +
@@ -551,7 +552,7 @@ async function recommend(category, limit) {
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.9.1",
+    version: "1.9.2",
     author: "musicweb",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
@@ -579,6 +580,11 @@ module.exports = {
      * 專輯來源是 audiomack，它的曲目在部分地區播不出來、又無從救援）。
      */
     async getAlbumInfo(albumItem) {
+        if (hostHasBackend()) {
+            const data = await neteaseRequest(
+                "/api/why-album?id=" + encodeURIComponent(albumItem.id));
+            return { musicList: (data && data.data) || [] };
+        }
         const data = await neteaseRequest("/api/v1/album/" + encodeURIComponent(albumItem.id));
         const songs = (data && data.songs) || [];
         return { musicList: songs.map(trackToItem).filter(Boolean) };
