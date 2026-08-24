@@ -368,6 +368,56 @@ async function resolveUrl(opts) {
     return null;
 }
 
+// ── 專輯 ────────────────────────────────────────────────────────────
+/**
+ * 網易雲的公開端點。專輯資料只有它有 —— GD 的聚合 API 完全沒有專輯類型
+ * （types=album/albuminfo/albumlist 都回 "not supported"）。
+ *
+ * 它一個 CORS 標頭都不送，所以：
+ *   有後端（網頁版）→ 走本站的 /api/proxy 代抓
+ *   沒後端（App 版）→ 直接打，由播放器的沙箱用原生 HTTP 救援（見 runner.ts）
+ *
+ * 專輯詳情用 /api/v1/album/{id}：舊的 /api/album/{id} 現在一律回 code -462
+ * 要求綁定手機，v1 那條不用。
+ */
+async function neteaseRequest(path) {
+    const target = "https://music.163.com" + path;
+    if (hostHasBackend()) {
+        return await fetchJson("/api/proxy?url=" + encodeURIComponent(target) + "&method=GET");
+    }
+    return await fetchJson(target);
+}
+
+/** 網易雲專輯 → MusicItem（type=album，播放器據此開專輯頁而不是直接播） */
+function albumToItem(raw) {
+    if (!raw || !raw.id || !raw.name) return null;
+    const artists = (raw.artists || (raw.artist ? [raw.artist] : []))
+        .map(a => a && a.name).filter(Boolean).join(" / ");
+    return {
+        id: String(raw.id),
+        title: String(raw.name),
+        artist: artists,
+        album: String(raw.name),
+        artwork: thumb(raw.picUrl || raw.blurPicUrl),
+        platform: PLATFORM,
+        subSource: "netease",
+        // 專輯裡有幾首。使用者在搜尋結果就看得出這是單曲還是專輯
+        worksNum: Number(raw.size) || 0,
+        type: "album",
+    };
+}
+
+/** 專輯搜尋（網易雲 type=10）。只有 netease 有，不做多源聚合 */
+async function searchAlbums(keyword, page, count) {
+    const offset = (Math.max(1, page) - 1) * count;
+    const data = await neteaseRequest(
+        "/api/search/get?s=" + encodeURIComponent(keyword) +
+        "&type=10&limit=" + count + "&offset=" + offset,
+    );
+    const albums = (data && data.result && data.result.albums) || [];
+    return albums.map(albumToItem).filter(Boolean);
+}
+
 // ── 推薦 ────────────────────────────────────────────────────────────
 /**
  * 網易雲圖床支援 ?param=寬y高 取縮圖。榜單封面原圖一張 2~3MB，一頁列表
@@ -478,21 +528,37 @@ async function recommend(category, limit) {
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.8.1",
+    version: "1.9.0",
     author: "musicweb",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
     cacheControl: "no-cache",
-    // 只支援歌曲搜尋。專輯搜尋原本唯一的提供者是 audiomack，該子源已移除。
-    supportedSearchType: ["music"],
+    // 歌曲走 GD 聚合（netease+joox），專輯走網易雲公開端點（GD 沒有專輯類型）
+    supportedSearchType: ["music", "album"],
 
-    async search(query, page) {
-        const list = await searchAll(query, page || 1, PAGE_SIZE);
+    async search(query, page, type) {
+        const p = page || 1;
+        if (type === "album") {
+            const albums = await searchAlbums(query, p, PAGE_SIZE);
+            return { isEnd: albums.length < PAGE_SIZE, data: albums };
+        }
+        const list = await searchAll(query, p, PAGE_SIZE);
         return {
             // 聚合多個子音源，回傳量少於單源頁大小即視為到底
             isEnd: list.length < PAGE_SIZE,
             data: list,
         };
+    },
+
+    /**
+     * 專輯曲目。回傳的是 netease 曲目，所以照現有的播放鏈路就能播 ——
+     * 不需要逐首跨源比對（那才是專輯功能上次被移除的真正原因：當時唯一的
+     * 專輯來源是 audiomack，它的曲目在部分地區播不出來、又無從救援）。
+     */
+    async getAlbumInfo(albumItem) {
+        const data = await neteaseRequest("/api/v1/album/" + encodeURIComponent(albumItem.id));
+        const songs = (data && data.songs) || [];
+        return { musicList: songs.map(trackToItem).filter(Boolean) };
     },
 
     async getMediaSource(musicItem, quality) {
