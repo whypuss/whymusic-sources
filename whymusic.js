@@ -500,11 +500,14 @@ function sortTracks(tracks, order) {
  * 新歌可看，不必等上游更新。
  *
  * 用時間分桶而不是每次隨機：同一段時間內重複開、切分類再切回來，看到的是
- * 同一批歌 —— 清單在眼皮底下跳動比「一直是舊的」更糟。15 分鐘一桶，比一次
- * 聽歌的時間長，所以一個 session 內穩定，隔一陣子再開就換一批。
+ * 同一批歌 —— 清單在眼皮底下跳動比「一直是舊的」更糟。
+ *
+ * 一天一桶：跟榜單自己的更新節奏對齊（網易雲日榜一天一次）。一天內反覆開
+ * app 是同一批歌，隔天才換 —— 那是「今天的推薦」該有的樣子；更短的桶會讓
+ * 早上想聽但沒點的那首，下午就找不回來了。
  * 取到尾端繞回開頭（池子不大，不繞的話後段只會拿到半頁）。
  */
-var ROTATE_BUCKET_MS = 15 * 60 * 1000;
+var ROTATE_BUCKET_MS = 24 * 60 * 60 * 1000;
 
 function rotateWindow(list, limit) {
     const total = list.length;
@@ -576,7 +579,7 @@ async function recommend(category, limit) {
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.10.0",
+    version: "1.10.1",
     author: "musicweb",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
