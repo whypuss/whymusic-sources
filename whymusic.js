@@ -381,11 +381,34 @@ async function resolveUrl(opts) {
  * 要求綁定手機，v1 那條不用。
  */
 async function neteaseRequest(path) {
+    const cacheKey = "netease:" + path;
+    const cached = cacheGet(cacheKey);
+    if (cached !== undefined) return cached;
+
     const target = "https://music.163.com" + path;
-    if (hostHasBackend()) {
-        return await fetchJson("/api/proxy?url=" + encodeURIComponent(target) + "&method=GET");
+    const url = hostHasBackend()
+        ? "/api/proxy?url=" + encodeURIComponent(target) + "&method=GET"
+        : target;
+
+    /**
+     * 網易雲會對同一來源 IP 的連續請求回 `code: -462`（要求手機驗證）並附上
+     * 空資料 —— 不是錯誤回應，HTTP 還是 200，內容卻是空的。經 Cloudflare
+     * Worker 代抓時特別容易撞到：出口 IP 是共用的。
+     *
+     * 實測連打三次就會在第三次被擋。所以：擋了就退避重試（0.4s、1.2s），
+     * 成功的結果進快取（專輯內容不會變，快取住就不會反覆去踩）。
+     */
+    let last;
+    for (let attempt = 0; attempt < 3; attempt++) {
+        if (attempt > 0) {
+            await new Promise(r => setTimeout(r, attempt === 1 ? 400 : 1200));
+        }
+        const data = await fetchJson(url);
+        if (data && data.code === -462) { last = data; continue; }
+        cacheSet(cacheKey, data, TTL.playlist);
+        return data;
     }
-    return await fetchJson(target);
+    throw new Error("網易雲要求驗證（連續請求過快），請稍後再試");
 }
 
 /** 網易雲專輯 → MusicItem（type=album，播放器據此開專輯頁而不是直接播） */
@@ -528,7 +551,7 @@ async function recommend(category, limit) {
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.9.0",
+    version: "1.9.1",
     author: "musicweb",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
