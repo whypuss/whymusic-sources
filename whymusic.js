@@ -492,23 +492,47 @@ function sortTracks(tracks, order) {
  * 多種順序交錯合併、同名同歌手去重、裁到 limit。
  * 交錯而非串接：串接的話 limit 會被第一種順序吃光，第二種等於沒接上。
  */
+/**
+ * 輪替視窗：從整份榜單裡取哪一段。
+ *
+ * 榜單很少動（叱咤一週一次、網易雲日榜一天一次），但它有的歌遠比畫面顯示的多
+ * （粵語 1000 首、熱門與歐美 200、其餘 100，而畫面只放 80）—— 換一段取就有
+ * 新歌可看，不必等上游更新。
+ *
+ * 用時間分桶而不是每次隨機：同一段時間內重複開、切分類再切回來，看到的是
+ * 同一批歌 —— 清單在眼皮底下跳動比「一直是舊的」更糟。15 分鐘一桶，比一次
+ * 聽歌的時間長，所以一個 session 內穩定，隔一陣子再開就換一批。
+ * 取到尾端繞回開頭（池子不大，不繞的話後段只會拿到半頁）。
+ */
+var ROTATE_BUCKET_MS = 15 * 60 * 1000;
+
+function rotateWindow(list, limit) {
+    const total = list.length;
+    if (total <= limit) return list.slice(0, limit);
+    const bucket = Math.floor(Date.now() / ROTATE_BUCKET_MS);
+    const offset = (bucket * limit) % total;
+    const out = [];
+    for (let i = 0; i < limit; i++) out.push(list[(offset + i) % total]);
+    return out;
+}
+
 function mergeOrders(tracks, orders, limit) {
     const buckets = orders.map(order => sortTracks(tracks, order).map(trackToItem).filter(Boolean));
     const seen = new Set();
-    const out = [];
+    // 先合併**整份**榜單再輪替 —— 要換一段取，就得先有完整的池子
+    const merged = [];
     const maxLen = Math.max(0, ...buckets.map(b => b.length));
-    for (let idx = 0; idx < maxLen && out.length < limit; idx++) {
+    for (let idx = 0; idx < maxLen; idx++) {
         for (const bucket of buckets) {
-            if (out.length >= limit) break;
             const item = bucket[idx];
             if (!item) continue;
             const key = normalizeName(item.title) + "::" + normalizeName(item.artist);
             if (seen.has(key)) continue;
             seen.add(key);
-            out.push(item);
+            merged.push(item);
         }
     }
-    return out;
+    return rotateWindow(merged, limit);
 }
 
 /** 直連 GD 抓整份榜單再自己排序裁切。只在後端不可用時才走這條 —— 見 recommend() */
@@ -552,7 +576,7 @@ async function recommend(category, limit) {
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.9.2",
+    version: "1.10.0",
     author: "musicweb",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
