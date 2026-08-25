@@ -403,7 +403,7 @@ async function recommend(category, limit) {
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.0.1",
+    version: "1.0.2",
     author: "musicweb（音源組合提取自 sealure/joy-tune）",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
