@@ -553,10 +553,10 @@ function mergeOrders(tracks, orders, limit, seedKey) {
 }
 
 /** 直連 GD 抓整份榜單再自己排序裁切。只在後端不可用時才走這條 —— 見 recommend() */
-async function recommendDirect(cat, limit) {
+async function recommendDirect(cat, limit, seed) {
     const data = await gdRequest("playlist", { source: "netease", id: cat.list });
     const tracks = (data && data.playlist && data.playlist.tracks) || [];
-    return mergeOrders(tracks, cat.orders || ["chart"], limit, cat.list);
+    return mergeOrders(tracks, cat.orders || ["chart"], limit, cat.list + ":" + (seed || "0"));
 }
 
 /**
@@ -571,16 +571,18 @@ async function recommendDirect(cat, limit) {
  * 直連那條仍然留著：部署在 Cloudflare 時後端打 GD 會被回 520（GD 擋 Worker
  * 出口），那時只有瀏覽器直連能拿到資料，慢也比空白好。
  */
-async function recommend(category, limit) {
+async function recommend(category, limit, seed) {
     const cat = CATEGORIES[category] || CATEGORIES[DEFAULT_CATEGORY];
     const key = category in CATEGORIES ? category : DEFAULT_CATEGORY;
+    const nonce = String(seed || "0");
     // 原生 App（APK）裡沒有本站後端，跳過那一步直接走直連 —— 不然每次切分類都
     // 要先白等一個必然失敗的請求（而且 SPA fallback 會回 index.html，還得靠
     // 「回應非 JSON」才判定失敗，訊息很難懂）。
-    if (!hostHasBackend()) return await recommendDirect(cat, limit);
+    if (!hostHasBackend()) return await recommendDirect(cat, limit, nonce);
     try {
         const data = await fetchJson(
-            "/api/recommend?cat=" + encodeURIComponent(key) + "&limit=" + limit,
+            "/api/recommend?cat=" + encodeURIComponent(key) + "&limit=" + limit
+            + "&seed=" + encodeURIComponent(nonce),
         );
         const list = Array.isArray(data) ? data : (data && data.data) || [];
         if (list.length > 0) return list.slice(0, limit);
@@ -588,12 +590,12 @@ async function recommend(category, limit) {
     } catch (err) {
         console.warn("[why] 後端推薦不可用，改直連 GD：" + err.message);
     }
-    return await recommendDirect(cat, limit);
+    return await recommendDirect(cat, limit, nonce);
 }
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.10.2",
+    version: "1.10.3",
     author: "musicweb",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
@@ -678,13 +680,14 @@ module.exports = {
      * app 不自己打推薦端點 —— 推薦是音源的能力，沒裝音源就該沒有推薦，
      * 這樣播放器才真的與音源分離。
      */
-    async getRecommend(category, limit) {
+    async getRecommend(category, limit, seed) {
         // limit 可能被舊版 app 傳成別的東西，取不到數字就用預設，
         // 免得裁切失效、整份 1000 首榜單被塞進清單
         const size = Number(limit) > 0 ? Math.floor(Number(limit)) : 40;
         const key = category in CATEGORIES ? category : DEFAULT_CATEGORY;
         return {
-            data: await recommend(key, size),
+            // seed 由 app 在使用者按「刷新」時遞增 —— 同一天也能換一批歌
+            data: await recommend(key, size, seed),
             // 讓 app 能顯示「這批歌是哪來的」而不必自己知道任何榜單
             caption: CATEGORIES[key].caption,
         };

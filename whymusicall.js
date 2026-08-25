@@ -357,53 +357,81 @@ function sortTracks(tracks, order) {
         ((b.pop || 0) - (a.pop || 0)) || ((b.publishTime || 0) - (a.publishTime || 0)));
 }
 
-/** 多種順序交錯合併、同名同歌手去重、裁到 limit */
-function mergeOrders(tracks, orders, limit) {
+/**
+ * 日期＋榜單（＋刷新用的 seed）做種子的確定性洗牌。與 whymusic.js／後端同一套：
+ * 同一天、同一個 seed 算出來的都一樣，換日或按刷新才換一批。
+ */
+var ROTATE_BUCKET_MS = 24 * 60 * 60 * 1000;
+
+function dailyShuffle(list, limit, seedKey) {
+    if (list.length === 0) return [];
+    let seed = Math.floor(Date.now() / ROTATE_BUCKET_MS);
+    const s = String(seedKey || "");
+    for (let i = 0; i < s.length; i++) seed = (seed * 31 + s.charCodeAt(i)) | 0;
+    let a = seed >>> 0;
+    const rand = () => {
+        a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const arr = list.slice();
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+    }
+    return arr.slice(0, limit);
+}
+
+/** 多種順序交錯合併、同名同歌手去重，再洗牌裁到 limit */
+function mergeOrders(tracks, orders, limit, seedKey) {
     const buckets = orders.map(order => sortTracks(tracks, order).map(trackToItem).filter(Boolean));
     const seen = new Set();
-    const out = [];
+    // 先合併**整份**榜單再洗牌 —— 要換一批取，就得先有完整的池子
+    const merged = [];
     const maxLen = Math.max(0, ...buckets.map(b => b.length));
-    for (let idx = 0; idx < maxLen && out.length < limit; idx++) {
+    for (let idx = 0; idx < maxLen; idx++) {
         for (const bucket of buckets) {
-            if (out.length >= limit) break;
             const item = bucket[idx];
             if (!item) continue;
             const key = normalizeName(item.title) + "::" + normalizeName(item.artist);
             if (seen.has(key)) continue;
             seen.add(key);
-            out.push(item);
+            merged.push(item);
         }
     }
-    return out;
+    return dailyShuffle(merged, limit, seedKey);
 }
 
 /** 直連 GD 抓整份榜單再自己排序裁切。只在後端不可用時才走 —— 見 recommend() */
-async function recommendDirect(cat, limit) {
+async function recommendDirect(cat, limit, seed) {
     const data = await gdRequest("playlist", { source: "netease", id: cat.list });
     const tracks = (data && data.playlist && data.playlist.tracks) || [];
-    return mergeOrders(tracks, cat.orders || ["chart"], limit);
+    return mergeOrders(tracks, cat.orders || ["chart"], limit, cat.list + ":" + (seed || "0"));
 }
 
 /** 推薦：先問本站後端（回應小、快取全站共用），失敗才直連 GD。理由見 whymusic.js。 */
-async function recommend(category, limit) {
+async function recommend(category, limit, seed) {
     const cat = CATEGORIES[category] || CATEGORIES[DEFAULT_CATEGORY];
     const key = category in CATEGORIES ? category : DEFAULT_CATEGORY;
-    if (!hostHasBackend()) return await recommendDirect(cat, limit);
+    const nonce = String(seed || "0");
+    if (!hostHasBackend()) return await recommendDirect(cat, limit, nonce);
     try {
         const data = await fetchJson(
-            "/api/recommend?cat=" + encodeURIComponent(key) + "&limit=" + limit,
+            "/api/recommend?cat=" + encodeURIComponent(key) + "&limit=" + limit
+            + "&seed=" + encodeURIComponent(nonce),
         );
         const list = Array.isArray(data) ? data : (data && data.data) || [];
         if (list.length > 0) return list.slice(0, limit);
     } catch (err) {
         console.warn("[whymusicall] 後端推薦不可用，改直連 GD：" + err.message);
     }
-    return await recommendDirect(cat, limit);
+    return await recommendDirect(cat, limit, nonce);
 }
 
 module.exports = {
     platform: PLATFORM,
-    version: "1.0.2",
+    version: "1.0.3",
     author: "musicweb（音源組合提取自 sealure/joy-tune）",
     // 同一首歌在不同子音源的 id 不同，需連同 subSource 才唯一
     primaryKey: ["id", "subSource"],
@@ -453,7 +481,7 @@ module.exports = {
         return (data && data.url) || "";
     },
 
-    async getRecommend(category, limit) {
+    async getRecommend(category, limit, seed) {
         const size = Number(limit) > 0 ? Math.floor(Number(limit)) : 40;
         return { data: await recommend(category || DEFAULT_CATEGORY, size) };
     },
